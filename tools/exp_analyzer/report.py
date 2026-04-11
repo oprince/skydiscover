@@ -3,10 +3,11 @@
 import csv
 import json
 import os
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from .extractor import Record
 from .synthesizer import Pattern
+from .verdict import Verdict
 
 
 def write_all(
@@ -14,6 +15,9 @@ def write_all(
     patterns: List[Pattern],
     mapping: Dict[str, List[str]],
     output_dir: str,
+    verdict: Optional[Verdict] = None,
+    model: Optional[str] = None,
+    elapsed_seconds: Optional[float] = None,
 ) -> None:
     os.makedirs(output_dir, exist_ok=True)
 
@@ -21,11 +25,16 @@ def write_all(
     _write_shortcoming_list(patterns, output_dir)
     _write_per_record_csv(records, mapping, output_dir)
     _write_mapping_csv(records, patterns, mapping, output_dir)
-    _write_markdown_report(records, patterns, mapping, output_dir)
+    if verdict is not None:
+        _write_verdict_json(verdict, output_dir)
+    _write_markdown_report(records, patterns, mapping, output_dir, verdict, model, elapsed_seconds)
 
     print(f"\nAnalysis complete. Output written to: {output_dir}")
     print(f"  {len(records)} records extracted")
     print(f"  {len(patterns)} recurring patterns discovered")
+    if verdict is not None:
+        print(f"  {len(verdict.what_works)} 'what works' finding(s)")
+        print(f"  {len(verdict.what_doesnt_work)} 'what doesn't work' finding(s)")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -43,6 +52,24 @@ def _write_records_json(records: List[Record], output_dir: str) -> None:
         }
         for r in records
     ]
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+    print(f"  [wrote] {path}")
+
+
+def _write_verdict_json(verdict: Verdict, output_dir: str) -> None:
+    path = os.path.join(output_dir, "verdict.json")
+    data = {
+        "overall_assessment": verdict.overall_assessment,
+        "what_works": [
+            {"finding": v.finding, "evidence": v.evidence, "confidence": v.confidence}
+            for v in verdict.what_works
+        ],
+        "what_doesnt_work": [
+            {"finding": v.finding, "evidence": v.evidence, "confidence": v.confidence}
+            for v in verdict.what_doesnt_work
+        ],
+    }
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
     print(f"  [wrote] {path}")
@@ -95,19 +122,71 @@ def _write_mapping_csv(
     print(f"  [wrote] {path}")
 
 
+CONFIDENCE_BADGE = {"high": "🟢", "medium": "🟡", "low": "🔴"}
+
+
+def _format_elapsed(seconds: float) -> str:
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    m, s = divmod(seconds, 60)
+    if m < 60:
+        return f"{m}m {s}s"
+    h, m = divmod(m, 60)
+    return f"{h}h {m}m {s}s"
+
+
 def _write_markdown_report(
     records: List[Record],
     patterns: List[Pattern],
     mapping: Dict[str, List[str]],
     output_dir: str,
+    verdict: Optional[Verdict] = None,
+    model: Optional[str] = None,
+    elapsed_seconds: Optional[float] = None,
 ) -> None:
     path = os.path.join(output_dir, "report.md")
     lines = []
 
     lines.append("# Experiment Analysis Report\n")
     lines.append(f"**{len(records)} records** extracted — **{len(patterns)} recurring patterns** discovered\n")
+    meta_parts = []
+    if model:
+        meta_parts.append(f"Model: `{model}`")
+    if elapsed_seconds is not None:
+        meta_parts.append(f"Analysis time: {_format_elapsed(elapsed_seconds)}")
+    if meta_parts:
+        lines.append(f"*{' · '.join(meta_parts)}*\n")
 
-    # Pattern taxonomy
+    # ── Verdict ──────────────────────────────────────────────────────────────
+    if verdict is not None:
+        lines.append("---\n")
+        lines.append("## Verdict\n")
+
+        if verdict.overall_assessment:
+            lines.append(f"{verdict.overall_assessment}\n")
+
+        lines.append("### What Works\n")
+        if verdict.what_works:
+            for item in verdict.what_works:
+                badge = CONFIDENCE_BADGE.get(item.confidence, "")
+                lines.append(f"- {badge} **{item.finding}**\n")
+                if item.evidence:
+                    lines.append(f"  - *Evidence:* {', '.join(f'`{e}`' for e in item.evidence)}\n")
+        else:
+            lines.append("*(no clear successes identified)*\n")
+
+        lines.append("### What Doesn't Work\n")
+        if verdict.what_doesnt_work:
+            for item in verdict.what_doesnt_work:
+                badge = CONFIDENCE_BADGE.get(item.confidence, "")
+                lines.append(f"- {badge} **{item.finding}**\n")
+                if item.evidence:
+                    lines.append(f"  - *Evidence:* {', '.join(f'`{e}`' for e in item.evidence)}\n")
+        else:
+            lines.append("*(no clear failures identified)*\n")
+
+    # ── Pattern taxonomy ──────────────────────────────────────────────────────
     lines.append("---\n")
     lines.append("## Recurring Patterns\n")
     lines.append("Sorted by occurrence count (descending).\n")

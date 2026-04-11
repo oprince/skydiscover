@@ -7,19 +7,21 @@ Usage:
 Examples:
   python -m tools.exp_analyzer ./experiment_dir/
   python -m tools.exp_analyzer run.log metrics.csv notes.md
-  python -m tools.exp_analyzer EXP22.md --model qwen2.5:7b --api-base http://localhost:11434/v1
-  python -m tools.exp_analyzer EXP22.md --model claude-sonnet-4-6 --api-key $ANTHROPIC_API_KEY
+  python -m tools.exp_analyzer EXP22.md --model gemini-2.5-flash --endpoint-url https://ete-litellm.ai-models.vpc-int.res.ibm.com
+  python -m tools.exp_analyzer EXP22.md --model qwen2.5:7b --endpoint-url http://localhost:11434
 """
 
 import argparse
 import logging
 import sys
+import time
 
 from .extractor import extract_records
 from .ingester import ingest
 from .llm_client import LLMClient
 from .report import write_all
 from .synthesizer import build_mapping, discover_patterns
+from .verdict import generate_verdict
 
 
 def main():
@@ -36,18 +38,18 @@ def main():
     )
     parser.add_argument(
         "--model", "-m",
-        default="qwen2.5:7b",
-        help="LLM model name (default: qwen2.5:7b)",
+        default="gemini-2.5-flash",
+        help="LLM model name (default: gemini-2.5-flash)",
     )
     parser.add_argument(
-        "--api-base",
-        default="http://localhost:11434/v1",
-        help="LLM API base URL (default: http://localhost:11434/v1)",
+        "--endpoint-url",
+        default="https://ete-litellm.ai-models.vpc-int.res.ibm.com",
+        help="LLM endpoint base URL (default: https://ete-litellm.ai-models.vpc-int.res.ibm.com)",
     )
     parser.add_argument(
         "--api-key",
         default=None,
-        help="LLM API key (default: $OPENAI_API_KEY or 'dummy' for local)",
+        help="LLM API key (default: $OPENAI_API_KEY)",
     )
     parser.add_argument(
         "--output-dir", "-o",
@@ -73,7 +75,8 @@ def main():
         format="%(levelname)s [%(name)s] %(message)s",
     )
 
-    llm = LLMClient(model=args.model, api_base=args.api_base, api_key=args.api_key)
+    llm = LLMClient(model=args.model, endpoint_url=args.endpoint_url, api_key=args.api_key)
+    start_time = time.monotonic()
 
     # Stage 1: Ingest
     print(f"\nStage 1: Ingesting files from {args.paths}")
@@ -96,9 +99,18 @@ def main():
     patterns = discover_patterns(records, llm)
     mapping = build_mapping(records, patterns)
 
+    # Stage 4: Generate verdict
+    print(f"\nStage 4: Generating verdict (what works / what doesn't)")
+    verdict = generate_verdict(records, patterns, llm)
+    if verdict.overall_assessment:
+        print(f"\n  Overall: {verdict.overall_assessment}")
+    print(f"  {len(verdict.what_works)} 'what works' finding(s), {len(verdict.what_doesnt_work)} 'what doesn't work' finding(s)")
+
     # Output
+    elapsed = time.monotonic() - start_time
     print(f"\nWriting output to {args.output_dir}")
-    write_all(records, patterns, mapping, args.output_dir)
+    write_all(records, patterns, mapping, args.output_dir, verdict,
+              model=args.model, elapsed_seconds=elapsed)
 
 
 if __name__ == "__main__":
