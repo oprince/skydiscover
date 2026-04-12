@@ -66,12 +66,13 @@ All written to `--output-dir` (default: `./exp_analysis_output/`):
 
 | File | Description |
 |------|-------------|
-| `report.md` | Human-readable report: verdict, pattern taxonomy, per-record summary table. Includes model name and total analysis time. |
+| `report.md` | Human-readable report: verdict, pattern taxonomy, and CSV references. Includes model name and analysis time. Regenerable with `report` subcommand. |
 | `verdict.json` | Structured what-works / what-doesn't-work findings with evidence and confidence |
 | `records.json` | All extracted records with id, summary, outcome, decisions, observations |
 | `shortcoming_list.json` | All discovered patterns with name, description, occurrence count, and list of record IDs |
 | `per_record_analysis.csv` | One row per record: id, source, summary, outcome, matched patterns |
 | `mapping_results.csv` | Record × pattern matrix (0/1 columns) |
+| `meta.json` | Run metadata: model name and elapsed time — read by the `report` subcommand |
 
 ---
 
@@ -92,21 +93,37 @@ require authentication.
 
 ## Usage
 
-Run from the skydiscover root directory:
+The tool has two subcommands:
 
 ```bash
-python -m tools.exp_analyzer <path> [<path> ...] [options]
+python -m tools.exp_analyzer analyze <path> [<path> ...] [options]
+python -m tools.exp_analyzer report  [options]
 ```
 
-### Options
+### `analyze` — full pipeline (requires LLM)
+
+Runs all four stages and writes all output files.
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `paths` | *(required)* | Files or directories to analyze |
 | `--model`, `-m` | `gemini-2.5-flash` | LLM model name |
 | `--endpoint-url` | `https://ete-litellm.ai-models.vpc-int.res.ibm.com` | LLM endpoint base URL (auto-appends `/v1`) |
 | `--api-key` | `$OPENAI_API_KEY` | LLM API key |
 | `--output-dir`, `-o` | `./exp_analysis_output` | Where to write output files |
 | `--chunk-size` | `12000` | Max characters per chunk for large files |
+| `--verbose`, `-v` | off | Enable debug logging |
+
+### `report` — regenerate report only (no LLM calls)
+
+Reads `records.json`, `shortcoming_list.json`, `verdict.json`, and `meta.json`
+from a previous `analyze` run and rewrites `report.md`. Useful for tweaking the
+report format without re-running the expensive LLM pipeline.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--input-dir`, `-i` | `./exp_analysis_output` | Directory containing a previous run's output |
+| `--output-dir`, `-o` | *(same as `--input-dir`)* | Where to write the new `report.md` |
 | `--verbose`, `-v` | off | Enable debug logging |
 
 ---
@@ -116,14 +133,14 @@ python -m tools.exp_analyzer <path> [<path> ...] [options]
 ### Enterprise litellm proxy (default)
 
 ```bash
-python -m tools.exp_analyzer experiment_scratchpad.md \
+python -m tools.exp_analyzer analyze experiment_scratchpad.md \
   --output-dir ./analysis_output/
 ```
 
 ### Explicit endpoint and model
 
 ```bash
-python -m tools.exp_analyzer experiment_scratchpad.md \
+python -m tools.exp_analyzer analyze experiment_scratchpad.md \
   --model gemini-2.5-flash \
   --endpoint-url https://ete-litellm.ai-models.vpc-int.res.ibm.com \
   --output-dir ./analysis_output/
@@ -132,7 +149,7 @@ python -m tools.exp_analyzer experiment_scratchpad.md \
 ### Local Ollama
 
 ```bash
-python -m tools.exp_analyzer experiment_scratchpad.md \
+python -m tools.exp_analyzer analyze experiment_scratchpad.md \
   --model qwen2.5:14b \
   --endpoint-url http://localhost:11434 \
   --output-dir ./analysis_output/
@@ -141,15 +158,19 @@ python -m tools.exp_analyzer experiment_scratchpad.md \
 ### Multiple files of different types
 
 ```bash
-python -m tools.exp_analyzer run.log metrics.csv notes.md \
+python -m tools.exp_analyzer analyze run.log metrics.csv notes.md \
   --output-dir ./analysis_output/
 ```
 
-### Entire experiment directory
+### Regenerate report from a previous run
 
 ```bash
-python -m tools.exp_analyzer /path/to/experiment_outputs/ \
-  --output-dir ./analysis_output/
+python -m tools.exp_analyzer report --input-dir ./analysis_output/
+
+# Write to a different directory
+python -m tools.exp_analyzer report \
+  --input-dir ./analysis_output/ \
+  --output-dir ./report_only/
 ```
 
 ---
