@@ -27,6 +27,7 @@ def write_all(
     _write_mapping_csv(records, patterns, mapping, output_dir)
     if verdict is not None:
         _write_verdict_json(verdict, output_dir)
+    _write_meta_json(output_dir, model=model, elapsed_seconds=elapsed_seconds)
     _write_markdown_report(records, patterns, mapping, output_dir, verdict, model, elapsed_seconds)
 
     print(f"\nAnalysis complete. Output written to: {output_dir}")
@@ -70,6 +71,22 @@ def _write_verdict_json(verdict: Verdict, output_dir: str) -> None:
             for v in verdict.what_doesnt_work
         ],
     }
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+    print(f"  [wrote] {path}")
+
+
+def _write_meta_json(
+    output_dir: str,
+    model: Optional[str] = None,
+    elapsed_seconds: Optional[float] = None,
+) -> None:
+    path = os.path.join(output_dir, "meta.json")
+    data: dict = {}
+    if model is not None:
+        data["model"] = model
+    if elapsed_seconds is not None:
+        data["elapsed_seconds"] = round(elapsed_seconds, 1)
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
     print(f"  [wrote] {path}")
@@ -149,14 +166,13 @@ def _write_markdown_report(
     lines = []
 
     lines.append("# Experiment Analysis Report\n")
-    lines.append(f"**{len(records)} records** extracted — **{len(patterns)} recurring patterns** discovered\n")
-    meta_parts = []
+    lines.append(f"- **Records extracted:** {len(records)}\n")
+    lines.append(f"- **Recurring patterns:** {len(patterns)}\n")
     if model:
-        meta_parts.append(f"Model: `{model}`")
+        lines.append(f"- **Model:** `{model}`\n")
     if elapsed_seconds is not None:
-        meta_parts.append(f"Analysis time: {_format_elapsed(elapsed_seconds)}")
-    if meta_parts:
-        lines.append(f"*{' · '.join(meta_parts)}*\n")
+        lines.append(f"- **Analysis time:** {_format_elapsed(elapsed_seconds)}\n")
+    lines.append("\n")
 
     # ── Verdict ──────────────────────────────────────────────────────────────
     if verdict is not None:
@@ -172,7 +188,10 @@ def _write_markdown_report(
                 badge = CONFIDENCE_BADGE.get(item.confidence, "")
                 lines.append(f"- {badge} **{item.finding}**\n")
                 if item.evidence:
-                    lines.append(f"  - *Evidence:* {', '.join(f'`{e}`' for e in item.evidence)}\n")
+                    lines.append(f"  - *Evidence:* {len(item.evidence)} record(s) — "
+                                 f"filter `per_record_analysis.csv` by id: "
+                                 f"{', '.join(f'`{e}`' for e in item.evidence[:3])}"
+                                 f"{'…' if len(item.evidence) > 3 else ''}\n")
         else:
             lines.append("*(no clear successes identified)*\n")
 
@@ -182,7 +201,10 @@ def _write_markdown_report(
                 badge = CONFIDENCE_BADGE.get(item.confidence, "")
                 lines.append(f"- {badge} **{item.finding}**\n")
                 if item.evidence:
-                    lines.append(f"  - *Evidence:* {', '.join(f'`{e}`' for e in item.evidence)}\n")
+                    lines.append(f"  - *Evidence:* {len(item.evidence)} record(s) — "
+                                 f"filter `per_record_analysis.csv` by id: "
+                                 f"{', '.join(f'`{e}`' for e in item.evidence[:3])}"
+                                 f"{'…' if len(item.evidence) > 3 else ''}\n")
         else:
             lines.append("*(no clear failures identified)*\n")
 
@@ -191,19 +213,16 @@ def _write_markdown_report(
     lines.append("## Recurring Patterns\n")
     lines.append("Sorted by occurrence count (descending).\n")
     for p in patterns:
-        lines.append(f"### `{p.name}` — {p.count} occurrence{'s' if p.count != 1 else ''}\n")
+        preview = ", ".join(f"`{o}`" for o in p.occurrences[:3])
+        ellipsis = "…" if p.count > 3 else ""
+        lines.append(f"### `{p.name}`\n")
         lines.append(f"{p.description}\n")
-        lines.append(f"**Seen in:** {', '.join(f'`{o}`' for o in p.occurrences)}\n")
+        lines.append(f"**Occurrences:** {p.count} record(s) — "
+                     f"filter `per_record_analysis.csv` by `matched_patterns` containing `{p.name}` "
+                     f"(e.g. {preview}{ellipsis})\n")
 
-    # Per-record summary
-    lines.append("---\n")
-    lines.append("## Per-Record Summary\n")
-    lines.append("| ID | Outcome | Matched Patterns |\n")
-    lines.append("|---|---|---|\n")
-    for r in records:
-        matched = ", ".join(f"`{pn}`" for pn in mapping.get(r.id, [])) or "—"
-        outcome = r.outcome.replace("|", "/") if r.outcome else "—"
-        lines.append(f"| `{r.id}` | {outcome} | {matched} |\n")
+    lines.append("\n---\n")
+    lines.append("*Full per-record breakdown (id, outcome, matched patterns) is available in `per_record_analysis.csv`.*\n")
 
     with open(path, "w") as f:
         f.writelines(lines)
