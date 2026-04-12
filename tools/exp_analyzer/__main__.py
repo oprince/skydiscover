@@ -91,9 +91,15 @@ def cmd_analyze(args: argparse.Namespace) -> None:
           f"{len(verdict.what_doesnt_work)} 'what doesn't work' finding(s)")
 
     elapsed = time.monotonic() - start_time
+    flags = {
+        "judge model": args.model,
+        "endpoint url": args.endpoint_url,
+        "input paths": ", ".join(args.paths),
+        "chunk size": args.chunk_size,
+    }
     print(f"\nWriting output to {args.output_dir}")
     write_all(records, patterns, mapping, args.output_dir, verdict,
-              model=args.model, elapsed_seconds=elapsed)
+              flags=flags, elapsed_seconds=elapsed)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -199,14 +205,15 @@ def cmd_report(args: argparse.Namespace) -> None:
     verdict = _load_verdict(input_dir)
     meta = _load_meta(input_dir)
 
+    model = (meta.get("flags") or {}).get("judge model")
     print(f"  {len(records)} records, {len(patterns)} patterns"
           + (f", verdict loaded" if verdict else ", no verdict found")
-          + (f", model: {meta['model']}" if meta.get("model") else ""))
+          + (f", judge model: {model}" if model else ""))
 
     os.makedirs(output_dir, exist_ok=True)
     _write_markdown_report(
         records, patterns, mapping, output_dir, verdict,
-        model=meta.get("model"),
+        flags=meta.get("flags"),
         elapsed_seconds=meta.get("elapsed_seconds"),
     )
     print(f"\nReport written to {os.path.join(output_dir, 'report.md')}")

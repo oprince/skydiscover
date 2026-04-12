@@ -16,7 +16,7 @@ def write_all(
     mapping: Dict[str, List[str]],
     output_dir: str,
     verdict: Optional[Verdict] = None,
-    model: Optional[str] = None,
+    flags: Optional[dict] = None,
     elapsed_seconds: Optional[float] = None,
 ) -> None:
     os.makedirs(output_dir, exist_ok=True)
@@ -27,8 +27,8 @@ def write_all(
     _write_mapping_csv(records, patterns, mapping, output_dir)
     if verdict is not None:
         _write_verdict_json(verdict, output_dir)
-    _write_meta_json(output_dir, model=model, elapsed_seconds=elapsed_seconds)
-    _write_markdown_report(records, patterns, mapping, output_dir, verdict, model, elapsed_seconds)
+    _write_meta_json(output_dir, flags=flags, elapsed_seconds=elapsed_seconds)
+    _write_markdown_report(records, patterns, mapping, output_dir, verdict, flags, elapsed_seconds)
 
     print(f"\nAnalysis complete. Output written to: {output_dir}")
     print(f"  {len(records)} records extracted")
@@ -78,15 +78,23 @@ def _write_verdict_json(verdict: Verdict, output_dir: str) -> None:
 
 def _write_meta_json(
     output_dir: str,
-    model: Optional[str] = None,
+    flags: Optional[dict] = None,
     elapsed_seconds: Optional[float] = None,
 ) -> None:
     path = os.path.join(output_dir, "meta.json")
+    # Load existing to accumulate elapsed time across partial runs
+    existing: dict = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            existing = json.load(f)
     data: dict = {}
-    if model is not None:
-        data["model"] = model
+    if flags is not None:
+        data["flags"] = flags
+    elif existing.get("flags"):
+        data["flags"] = existing["flags"]
     if elapsed_seconds is not None:
-        data["elapsed_seconds"] = round(elapsed_seconds, 1)
+        previous = existing.get("elapsed_seconds") or 0
+        data["elapsed_seconds"] = round(previous + elapsed_seconds, 1)
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
     print(f"  [wrote] {path}")
@@ -159,7 +167,7 @@ def _write_markdown_report(
     mapping: Dict[str, List[str]],
     output_dir: str,
     verdict: Optional[Verdict] = None,
-    model: Optional[str] = None,
+    flags: Optional[dict] = None,
     elapsed_seconds: Optional[float] = None,
 ) -> None:
     path = os.path.join(output_dir, "report.md")
@@ -168,10 +176,11 @@ def _write_markdown_report(
     lines.append("# Experiment Analysis Report\n")
     lines.append(f"- **Records extracted:** {len(records)}\n")
     lines.append(f"- **Recurring patterns:** {len(patterns)}\n")
-    if model:
-        lines.append(f"- **Model:** `{model}`\n")
     if elapsed_seconds is not None:
         lines.append(f"- **Analysis time:** {_format_elapsed(elapsed_seconds)}\n")
+    if flags:
+        for key, value in flags.items():
+            lines.append(f"- **{key}:** `{value}`\n")
     lines.append("\n")
 
     # ── Verdict ──────────────────────────────────────────────────────────────

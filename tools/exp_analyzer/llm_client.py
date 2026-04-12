@@ -2,15 +2,31 @@
 
 Auto-appends /v1 to the endpoint URL if not already present.
 Reads OPENAI_API_KEY from the environment for auth.
+Retries transient errors (timeout, connection reset, DNS) with exponential backoff.
 """
 
 import json
+import logging
 import os
 import re
+import time
 from typing import Optional
 from urllib.parse import urljoin
 
 import httpx
+
+logger = logging.getLogger(__name__)
+
+# Transient errors worth retrying
+_RETRYABLE = (
+    httpx.TimeoutException,
+    httpx.ConnectError,
+    httpx.RemoteProtocolError,
+    OSError,  # covers errno 8 (DNS) and errno 54 (connection reset)
+)
+
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 2  # seconds; doubles each attempt
 
 
 class LLMClient:
@@ -41,14 +57,26 @@ class LLMClient:
             ],
             "temperature": temperature,
         }
-        resp = httpx.post(url, json=body, headers=self._headers(), timeout=120)
-        try:
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            raise httpx.HTTPStatusError(
-                f"{e} {resp.text[:500]}", request=e.request, response=e.response
-            ) from None
-        return resp.json()["choices"][0]["message"]["content"]
+        last_exc: Exception = RuntimeError("No attempts made")
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                resp = httpx.post(url, json=body, headers=self._headers(), timeout=120)
+                try:
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    raise httpx.HTTPStatusError(
+                        f"{e} {resp.text[:500]}", request=e.request, response=e.response
+                    ) from None
+                return resp.json()["choices"][0]["message"]["content"]
+            except _RETRYABLE as e:
+                last_exc = e
+                if attempt < MAX_RETRIES:
+                    delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                    logger.warning(f"Transient error (attempt {attempt}/{MAX_RETRIES}): {e} — retrying in {delay}s")
+                    time.sleep(delay)
+                else:
+                    logger.warning(f"Transient error (attempt {attempt}/{MAX_RETRIES}): {e} — giving up")
+        raise last_exc
 
     def complete_json(self, system: str, user: str) -> object:
         """Call LLM and parse JSON from the response. Tries fenced block first, then raw."""
