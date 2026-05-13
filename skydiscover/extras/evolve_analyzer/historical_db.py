@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generator, List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -339,8 +340,9 @@ class HistoricalDB:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _connect(self) -> sqlite3.Connection:
-        """Return a sqlite3 connection, creating the DB and tables if needed."""
+    @contextmanager
+    def _connect(self) -> Generator[sqlite3.Connection, None, None]:
+        """Yield a sqlite3 connection, committing on success and closing always."""
         db_file = Path(self.db_path)
         db_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -380,4 +382,11 @@ class HistoricalDB:
             )
         """)
 
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()

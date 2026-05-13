@@ -4,6 +4,7 @@ CLI entry point: run-evolve-analysis
 import sys
 import json
 import logging
+import math
 import dataclasses
 from pathlib import Path
 from typing import Any, Optional
@@ -60,7 +61,6 @@ def _serialise_value(obj: Any) -> Any:
         return [_serialise_value(i) for i in obj]
     if isinstance(obj, float):
         # JSON does not support NaN / Inf — convert to None
-        import math
         if math.isnan(obj) or math.isinf(obj):
             return None
         return obj
@@ -403,7 +403,6 @@ def report_to_markdown(report: EvolveLoopReport) -> str:
 
 def _fmt_float(value: float) -> str:
     """Format a float, returning 'N/A' for NaN/Inf."""
-    import math
     if value is None or (isinstance(value, float) and (math.isnan(value) or math.isinf(value))):
         return "N/A"
     return f"{value:.6g}"
@@ -588,7 +587,7 @@ def postmortem(
         report, iter_df = run_postmortem(config, experiment_id=experiment_id)
     except Exception as exc:
         logger.error("Post-mortem pipeline failed: %s", exc, exc_info=True)
-        sys.exit(1)
+        raise click.ClickException(str(exc)) from exc
 
     # ── Write output files ────────────────────────────────────────────────────
     out_path = Path(output_dir)
@@ -641,8 +640,7 @@ def show_report(report_dir: str) -> None:
     report_path = Path(report_dir) / "report.json"
 
     if not report_path.is_file():
-        click.echo(f"Error: report.json not found in {report_dir}", err=True)
-        sys.exit(1)
+        raise click.ClickException(f"report.json not found in {report_dir}")
 
     with report_path.open("r", encoding="utf-8") as fh:
         data = json.load(fh)
@@ -756,10 +754,11 @@ def dashboard_main() -> None:
 
     script = str(Path(__file__).parent / "dashboard.py")
     try:
-        sys.exit(subprocess.call([
+        result = subprocess.run([
             sys.executable, "-m", "streamlit", "run", script,
             "--", "--report-dir", args.report_dir,
-        ]))
+        ])
+        sys.exit(result.returncode)
     except KeyboardInterrupt:
         sys.exit(0)
 

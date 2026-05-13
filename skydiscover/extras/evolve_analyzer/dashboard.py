@@ -145,7 +145,7 @@ def load_df(report_dir: str) -> Optional[pd.DataFrame]:
         if p.exists():
             try:
                 return pd.read_parquet(p) if p.suffix == ".parquet" else pd.read_csv(p)
-            except Exception:
+            except (OSError, ValueError):
                 pass
     return None
 
@@ -1247,12 +1247,12 @@ def _render_search_space(report: dict, df: Optional[pd.DataFrame]) -> None:
         if ev.startswith("Effective dimensionality:"):
             try:
                 eff_dim = int(ev.split(":", 1)[1].strip().split()[0])
-            except Exception:
+            except (ValueError, IndexError):
                 pass
         elif ev.startswith("Trial-to-param ratio:"):
             try:
                 trial_ratio = float(ev.split(":", 1)[1].strip())
-            except Exception:
+            except (ValueError, IndexError):
                 pass
         elif "frozen" in ev.lower() and "[" in ev:
             m = re.search(r"\[([^\]]+)\]", ev)
@@ -1261,7 +1261,7 @@ def _render_search_space(report: dict, df: Optional[pd.DataFrame]) -> None:
         elif ev.startswith("Bound-hit params:") and "none" not in ev.lower():
             try:
                 bound_hit = eval(ev.split(":", 1)[1].strip())  # noqa: S307
-            except Exception:
+            except (ValueError, SyntaxError):
                 pass
 
     # ── Key metrics ───────────────────────────────────────────────────────────
@@ -1683,7 +1683,7 @@ def _render_infrastructure(report: dict, df: Optional[pd.DataFrame]) -> None:
                 if m:
                     try:
                         sentinel_iters = set(ast.literal_eval(f"[{m.group(1)}]"))
-                    except Exception:
+                    except (ValueError, SyntaxError):
                         pass
                 break
 
