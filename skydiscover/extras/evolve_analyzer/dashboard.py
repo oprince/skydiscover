@@ -464,26 +464,48 @@ def _render_alert_panel(report: dict, df: Optional[pd.DataFrame]) -> None:
             st.info("No alerts match the selected severity filters.")
             return
 
-    for period in periods:
-        start = period.get("start_iteration", "?")
-        end = period.get("end_iteration") if period.get("end_iteration") is not None else "ongoing"
-        length = period.get("length", "?")
-        severity = period.get("severity", "info")
-        dominant = period.get("dominant_failure_type", "")
-        llm_analysis = period.get("llm_analysis")
-        recommendation = period.get("recommendation", "")
-        crash_samples = period.get("crash_samples", [])
+    def _alert_group_key(p: dict) -> tuple:
+        llm = p.get("llm_analysis")
+        llm_key = (llm.get("category", ""), llm.get("recommendation", "")) if isinstance(llm, dict) else llm
+        return (p.get("severity", "warning"), p.get("dominant_failure_type", ""), p.get("recommendation", ""), llm_key)
 
-        title = f"{length} consecutive non-improving iterations (iters {start}–{end})"
+    from collections import defaultdict
+    groups: dict = defaultdict(list)
+    for p in periods:
+        groups[_alert_group_key(p)].append(p)
+
+    for key, group in groups.items():
+        severity = key[0]
+        dominant = key[1]
+        recommendation = key[2]
+        first = group[0]
+        llm_analysis = first.get("llm_analysis")
+        all_crash_samples = [s for p in group for s in (p.get("crash_samples") or [])]
+
+        if len(group) == 1:
+            start = first.get("start_iteration", "?")
+            end = first.get("end_iteration") if first.get("end_iteration") is not None else "ongoing"
+            length = first.get("length", "?")
+            title = f"{length} consecutive non-improving iterations (iters {start}–{end})"
+        else:
+            ranges = [
+                f"iters {p.get('start_iteration','?')}–{p.get('end_iteration', 'ongoing')}"
+                for p in group
+            ]
+            if len(ranges) <= 4:
+                ranges_str = ", ".join(ranges)
+            else:
+                ranges_str = f"{ranges[0]}, {ranges[1]}, … {ranges[-1]} (+{len(ranges)-2} more)"
+            title = f"{len(group)} occurrences ({ranges_str})"
 
         root_html = (f'<div><span class="root-cause-badge">{dominant.upper()}</span></div>'
                      if dominant else "")
 
         crash_html = ""
-        if crash_samples:
+        if all_crash_samples:
             items = "".join(
                 f'<li><strong>iter {s["iteration"]}:</strong> <code style="color:#d93025">{s["error"]}</code></li>'
-                for s in crash_samples
+                for s in all_crash_samples
             )
             crash_html = f'<div class="llm-block"><strong>Crash errors:</strong><ul>{items}</ul></div>'
 
@@ -505,11 +527,20 @@ def _render_alert_panel(report: dict, df: Optional[pd.DataFrame]) -> None:
         rec_html = (f'<div class="rec-box"><strong>Recommendation:</strong> {recommendation}</div>'
                     if recommendation else "")
 
+        iters_html = ""
+        if len(group) > 1:
+            iter_items = "".join(
+                f'<li>iters {p.get("start_iteration","?")}–{p.get("end_iteration","?")}: {p.get("length","?")} consecutive non-improving</li>'
+                for p in group
+            )
+            iters_html = f'<div class="llm-block"><strong>Occurrences:</strong><ul>{iter_items}</ul></div>'
+
         badge_html = _badge(severity)
         with st.expander(f"{severity.upper()} — {title}", expanded=(severity == "critical")):
             st.markdown(f"""
             {badge_html} <span style="font-size:13px;font-weight:600">{title}</span>
             {root_html}
+            {iters_html}
             {crash_html}
             {llm_html}
             {rec_html}
