@@ -41,14 +41,26 @@ _OPENAI_API_PREFIXES = (
 )
 
 
+_NON_OPENAI_API_MARKERS = (
+    GOOGLE_AI_STUDIO_DOMAIN,
+    "api.anthropic.com",
+    "api.deepseek.com",
+    "api.mistral.ai",
+)
+
+
 def is_openai_reasoning_model(model_name: str, api_base: str) -> bool:
     """Check if a model is an OpenAI reasoning model requiring special parameters."""
     api_base_lower = (api_base or "").lower()
-    is_openai_api = (
-        any(api_base_lower.startswith(p) for p in _OPENAI_API_PREFIXES)
-        or ".openai.azure.com" in api_base_lower
+    is_openai_api = any(api_base_lower.startswith(p) for p in _OPENAI_API_PREFIXES) or (
+        ".openai.azure.com" in api_base_lower
     )
-    return is_openai_api and model_name.lower().startswith(REASONING_MODEL_PREFIXES)
+    # An unrecognized api_base (e.g. a LiteLLM proxy) transparently forwards to
+    # OpenAI, so detect by model name alone rather than blocking on the proxy URL.
+    is_known_non_openai = any(marker in api_base_lower for marker in _NON_OPENAI_API_MARKERS)
+    return (is_openai_api or not is_known_non_openai) and model_name.lower().startswith(
+        REASONING_MODEL_PREFIXES
+    )
 
 
 class OpenAILLM(LLMInterface):
