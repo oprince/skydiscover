@@ -1,4 +1,4 @@
-# evolve_analyzer
+# Evolve Experiment Analyzer
 
 **Diagnostic tool for evolutionary code optimization experiments.**
 
