@@ -129,10 +129,12 @@ def report_to_text(report: EvolveLoopReport) -> str:
         lines.append(f"  Total duration          : {agg.total_duration_hours:.2f} h")
     lines.append("")
 
-    # ── Run parameters ────────────────────────────────────────────────────────
-    has_run_params = any([report.run_source, report.run_path, report.run_config_path])
+    # ── Experiment analysis parameters ───────────────────────────────────────
+    algo_class = getattr(report, "algorithm_class", None)
+    js = getattr(report, "llm_judge_status", None)
+    has_run_params = any([report.run_source, report.run_path, report.run_config_path, js])
     if has_run_params:
-        lines.append("RUN PARAMETERS")
+        lines.append("EXPERIMENT ANALYSIS PARAMETERS")
         lines.append(thin)
         if report.run_source:
             lines.append(f"  --source                : {report.run_source}")
@@ -140,23 +142,34 @@ def report_to_text(report: EvolveLoopReport) -> str:
             lines.append(f"  --config                : {report.run_config_path}")
         if report.run_path:
             lines.append(f"  --path                  : {report.run_path}")
+        if js is not None:
+            lines.append("")
+            lines.append("  LLM Judge")
+            endpoint = js.base_url or js.provider
+            lines.append(f"  Model                   : {js.model} ({js.provider} via {endpoint})")
+            if js.status == "success":
+                lines.append("  Status                  : ✅ Connected successfully")
+            elif js.status == "skipped":
+                lines.append(f"  Status                  : ⏭  Skipped — {js.skip_reason}")
+            else:
+                lines.append("  Status                  : ❌ Failed")
+                if js.error:
+                    lines.append(f"  Error                   : {js.error}")
         lines.append("")
 
-    # ── LLM judge status ──────────────────────────────────────────────────────
-    js = getattr(report, "llm_judge_status", None)
-    if js is not None:
-        lines.append("LLM JUDGE")
+    # ── Experiment setup ──────────────────────────────────────────────────────
+    num_islands = getattr(report, "num_islands", None)
+    has_exp_setup = any([report.run_source, algo_class])
+    if has_exp_setup:
+        lines.append("EXPERIMENT SETUP")
         lines.append(thin)
-        endpoint = js.base_url or js.provider
-        lines.append(f"  Model                   : {js.model} ({js.provider} via {endpoint})")
-        if js.status == "success":
-            lines.append("  Status                  : ✅ Connected successfully")
-        elif js.status == "skipped":
-            lines.append(f"  Status                  : ⏭  Skipped — {js.skip_reason}")
-        else:
-            lines.append(f"  Status                  : ❌ Failed")
-            if js.error:
-                lines.append(f"  Error                   : {js.error}")
+        algo_name_display = getattr(report, "algorithm_name", None) or report.run_source
+        if algo_name_display:
+            lines.append(f"  Algorithm name          : {algo_name_display}")
+        if algo_class:
+            lines.append(f"  Algorithm class         : {algo_class}")
+        if num_islands is not None:
+            lines.append(f"  Islands                 : {num_islands}")
         lines.append("")
 
     # ── Dimensions ────────────────────────────────────────────────────────────
@@ -278,10 +291,11 @@ def report_to_markdown(report: EvolveLoopReport) -> str:
         lines.append(f"| Total duration | {agg.total_duration_hours:.2f} h |")
     lines.append("")
 
-    # ── Run parameters ────────────────────────────────────────────────────────
-    has_run_params = any([report.run_source, report.run_path, report.run_config_path])
+    # ── Experiment analysis parameters ───────────────────────────────────────
+    js = getattr(report, "llm_judge_status", None)
+    has_run_params = any([report.run_source, report.run_path, report.run_config_path, js])
     if has_run_params:
-        lines.append("## Run Parameters")
+        lines.append("## Experiment Analysis Parameters")
         lines.append("")
         if report.run_source:
             lines.append(f"- **--source:** `{report.run_source}`")
@@ -290,22 +304,35 @@ def report_to_markdown(report: EvolveLoopReport) -> str:
         if report.run_path:
             lines.append(f"- **--path:** `{report.run_path}`")
         lines.append("")
+        if js is not None:
+            lines.append("### LLM Judge")
+            lines.append("")
+            endpoint = js.base_url or js.provider
+            lines.append(f"- **Model:** `{js.model}` ({js.provider} via {endpoint})")
+            if js.status == "success":
+                lines.append("- **Status:** ✅ Connected successfully")
+            elif js.status == "skipped":
+                lines.append(f"- **Status:** ⏭ Skipped — {js.skip_reason}")
+            else:
+                lines.append("- **Status:** ❌ Failed")
+                if js.error:
+                    lines.append(f"- **Error:** {js.error}")
+            lines.append("")
 
-    # ── LLM judge status ──────────────────────────────────────────────────────
-    js = getattr(report, "llm_judge_status", None)
-    if js is not None:
-        lines.append("## LLM Judge")
+    # ── Experiment setup ──────────────────────────────────────────────────────
+    algo_class = getattr(report, "algorithm_class", None)
+    num_islands = getattr(report, "num_islands", None)
+    has_exp_setup = any([report.run_source, algo_class])
+    if has_exp_setup:
+        lines.append("## Experiment Setup")
         lines.append("")
-        endpoint = js.base_url or js.provider
-        lines.append(f"- **Model:** `{js.model}` ({js.provider} via {endpoint})")
-        if js.status == "success":
-            lines.append("- **Status:** ✅ Connected successfully")
-        elif js.status == "skipped":
-            lines.append(f"- **Status:** ⏭ Skipped — {js.skip_reason}")
-        else:
-            lines.append("- **Status:** ❌ Failed")
-            if js.error:
-                lines.append(f"- **Error:** {js.error}")
+        algo_name_display = getattr(report, "algorithm_name", None) or report.run_source
+        if algo_name_display:
+            lines.append(f"- **Algorithm name:** `{algo_name_display}`")
+        if algo_class:
+            lines.append(f"- **Algorithm class:** `{algo_class}`")
+        if num_islands is not None:
+            lines.append(f"- **Islands:** {num_islands}")
         lines.append("")
 
     # ── Dimension overview table ───────────────────────────────────────────────
@@ -730,6 +757,9 @@ def _dict_to_report(data: dict) -> EvolveLoopReport:
         aggregate_stats=_agg(data.get("aggregate_stats") or {}),
         novel_observations=data.get("novel_observations") or [],
         llm_judge_status=llm_judge_status,
+        algorithm_class=data.get("algorithm_class", "population_evolutionary"),
+        algorithm_name=data.get("algorithm_name"),
+        num_islands=data.get("num_islands"),
     )
 
 

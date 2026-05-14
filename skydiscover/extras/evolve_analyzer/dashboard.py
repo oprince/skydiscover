@@ -47,6 +47,7 @@ CUSTOM_CSS = """
 .exec-box p{font-size:13px;color:#202124;line-height:1.6;margin-bottom:8px}
 
 .section-title{font-size:14px;font-weight:700;color:#202124;margin-bottom:12px;margin-top:8px}
+.section-subtitle{font-size:13px;font-weight:600;color:#3c4043;margin-bottom:8px;margin-top:4px;margin-left:4px}
 .section-sub{font-size:12px;color:#5f6368;margin-bottom:16px;margin-top:-8px}
 
 .dim-table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden;border:1px solid #e0e0e0}
@@ -261,8 +262,8 @@ def _render_overview(report: dict, df: Optional[pd.DataFrame]) -> None:
     </div>
     """, unsafe_allow_html=True)
 
-    # --- Run Parameters ---
-    st.markdown('<div class="section-title">Run Parameters</div>', unsafe_allow_html=True)
+    # --- Experiment Analysis Parameters ---
+    st.markdown('<div class="section-title">Experiment Analysis Parameters</div>', unsafe_allow_html=True)
 
     run_source = report.get("run_source", "—")
     run_config = report.get("run_config_path", "—")
@@ -286,9 +287,7 @@ def _render_overview(report: dict, df: Optional[pd.DataFrame]) -> None:
     </div>
     """, unsafe_allow_html=True)
 
-    # --- LLM Judge ---
-    st.markdown('<div class="section-title">LLM Judge</div>', unsafe_allow_html=True)
-
+    # --- LLM Judge (sub-section of Experiment Analysis Parameters) ---
     llm = report.get("llm_judge_status", {}) or {}
     llm_model = llm.get("model", "—")
     llm_provider = llm.get("provider", "—")
@@ -296,20 +295,47 @@ def _render_overview(report: dict, df: Optional[pd.DataFrame]) -> None:
     llm_status = llm.get("status", "—")
     llm_error = llm.get("error")
 
-    status_icon = "✅ Connected successfully" if llm_status == "success" else f"❌ {llm_status}"
-    model_label = f"{llm_model} ({llm_provider}" + (f" via {llm_base_url}" if llm_base_url else "") + ")"
+    if llm_model != "—":
+        st.markdown('<div class="section-subtitle">LLM Judge</div>', unsafe_allow_html=True)
+        status_icon = "✅ Connected successfully" if llm_status == "success" else f"❌ {llm_status}"
+        model_label = f"{llm_model} ({llm_provider}" + (f" via {llm_base_url}" if llm_base_url else "") + ")"
 
-    judge_items = [("Model", model_label), ("Status", status_icon)]
-    if llm_error:
-        judge_items.append(("Error", llm_error))
-    judge_html = "".join(
-        f"<li style='font-size:13px;color:#3c4043;margin-bottom:6px;line-height:1.5'>"
-        f"<strong style='color:#202124'>{k}:</strong> {v}</li>"
-        for k, v in judge_items
-    )
-    st.markdown(f"""
+        judge_items = [("Model", model_label), ("Status", status_icon)]
+        if llm_error:
+            judge_items.append(("Error", llm_error))
+        judge_html = "".join(
+            f"<li style='font-size:13px;color:#3c4043;margin-bottom:6px;line-height:1.5'>"
+            f"<strong style='color:#202124'>{k}:</strong> {v}</li>"
+            for k, v in judge_items
+        )
+        st.markdown(f"""
     <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:14px 18px;margin-bottom:20px">
       <ul style="padding-left:18px;margin:0">{judge_html}</ul>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # --- Experiment Setup ---
+    algo_name = report.get("algorithm_name") or (run_source if run_source != "—" else None)
+    algo_class = report.get("algorithm_class")
+    num_islands = report.get("num_islands")
+    if algo_name or algo_class:
+        st.markdown('<div class="section-title">Experiment Setup</div>', unsafe_allow_html=True)
+        setup_items = []
+        if algo_name:
+            setup_items.append(("Algorithm name", algo_name))
+        if algo_class:
+            setup_items.append(("Algorithm class", algo_class))
+        if num_islands is not None:
+            setup_items.append(("Islands", num_islands))
+        setup_html = "".join(
+            f"<li style='font-size:13px;color:#3c4043;margin-bottom:6px;line-height:1.5'>"
+            f"<strong style='color:#202124'>{k}:</strong> "
+            f"<code style='background:#f1f3f4;padding:2px 6px;border-radius:3px;font-size:12px'>{v}</code></li>"
+            for k, v in setup_items
+        )
+        st.markdown(f"""
+    <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:14px 18px;margin-bottom:20px">
+      <ul style="padding-left:18px;margin:0">{setup_html}</ul>
     </div>
     """, unsafe_allow_html=True)
 

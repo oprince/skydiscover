@@ -59,6 +59,33 @@ historical:
   min_experiments: 5
   pattern_promotion_threshold: 3
 
+# ── Algorithm-class-specific rating thresholds ───────────────────────────────
+# Each class overrides the default rating cut-points for dimensions whose
+# healthy operating range differs by algorithm type.
+#
+# regression_frequency_thresholds: [t5, t4, t3, t2]
+#   lower_is_better; freq < tN → rating N, freq >= t2 → rating 1
+#
+# exploration_sdi_thresholds: [t5, t4, t3, t2]
+#   higher_is_better; sdi > t5 → 5, sdi >= t4 → 4, ..., sdi < t2 → 1
+#
+algorithm_classes:
+  population_evolutionary:
+    # High regression rate is expected and healthy (population selection pressure)
+    regression_frequency_thresholds: [0.15, 0.30, 0.50, 0.70]
+    # High diversity is the norm; use the same bar as the default
+    exploration_sdi_thresholds: [0.70, 0.50, 0.30, 0.10]
+  serial_refinement:
+    # Each step should improve; even 10% regression rate is a concern
+    regression_frequency_thresholds: [0.03, 0.10, 0.20, 0.35]
+    # Single-chain search naturally has lower diversity; relax the thresholds
+    exploration_sdi_thresholds: [0.40, 0.25, 0.10, 0.05]
+  bayesian_optimization:
+    # BO is exploitation-heavy; moderate regression rate is acceptable
+    regression_frequency_thresholds: [0.05, 0.15, 0.30, 0.50]
+    # BO explores less structurally; moderate diversity expected
+    exploration_sdi_thresholds: [0.50, 0.30, 0.15, 0.05]
+
 # ── In-flight mode (Phase 2 — not active in Phase 1) ────────────────────────
 inflight:
   poll_interval_seconds: 15

@@ -10,7 +10,7 @@ from typing import List, Optional, Tuple
 
 import yaml
 
-from skydiscover.extras.evolve_analyzer.ingestion.checkpoint_adapter import load_evolve_records
+from skydiscover.extras.evolve_analyzer.ingestion.checkpoint_adapter import load_evolve_records, detect_algorithm_class, detect_algorithm_name
 from skydiscover.extras.evolve_analyzer.quantitative.bundle import QuantitativeBundle
 from skydiscover.extras.evolve_analyzer.quantitative.stagnation_detector import detect_stagnation
 from skydiscover.extras.evolve_analyzer.quantitative.evaluator_analyzer import analyze_evaluator
@@ -171,6 +171,8 @@ def run_postmortem(config: dict, experiment_id: str = "") -> Tuple[EvolveLoopRep
     }
 
     records: List[dict] = load_evolve_records(source, path, **extra_kwargs)
+    algorithm_class = detect_algorithm_class(source, records)
+    algorithm_name = detect_algorithm_name(source, path)
 
     if not records:
         logger.warning(
@@ -187,6 +189,8 @@ def run_postmortem(config: dict, experiment_id: str = "") -> Tuple[EvolveLoopRep
             config=config,
             experiment_id=experiment_id,
             llm_judge_status=None,
+            algorithm_class=algorithm_class,
+            algorithm_name=algorithm_name,
         ), pd.DataFrame()
 
     # ── 2. Quantitative pass ──────────────────────────────────────────────────
@@ -332,6 +336,8 @@ def run_postmortem(config: dict, experiment_id: str = "") -> Tuple[EvolveLoopRep
         config=config,
         experiment_id=experiment_id,
         llm_judge_status=llm_judge_status,
+        algorithm_class=algorithm_class,
+        algorithm_name=algorithm_name,
     )
 
     # ── 6. Record experiment in historical DB (optional) ──────────────────────

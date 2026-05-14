@@ -88,6 +88,9 @@ class EvolveLoopReport:
     run_source: Optional[str] = None
     run_path: Optional[str] = None
     run_config_path: Optional[str] = None
+    algorithm_class: str = "population_evolutionary"
+    algorithm_name: Optional[str] = None
+    num_islands: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +104,68 @@ _RATING_LABELS = {
     4: "🟢 Good",
     5: "✅ Excellent",
 }
+
+
+# ---------------------------------------------------------------------------
+# Default rating thresholds (used when no algorithm_class config is present)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_REGRESSION_THRESHOLDS: List[float] = [0.05, 0.15, 0.30, 0.50]
+_DEFAULT_EXPLORATION_THRESHOLDS: List[float] = [0.70, 0.50, 0.30, 0.10]
+
+
+def _rate_by_thresholds(
+    value: float,
+    thresholds: List[float],
+    lower_is_better: bool,
+) -> int:
+    """Map a metric value to a 1–5 rating using a 4-element threshold list.
+
+    thresholds = [t5, t4, t3, t2]
+
+    lower_is_better=True : value < t5 → 5, value < t4 → 4, …, else → 1
+    lower_is_better=False: value > t5 → 5, value >= t4 → 4, …, else → 1
+    """
+    t5, t4, t3, t2 = thresholds
+    if lower_is_better:
+        if value < t5:
+            return 5
+        if value < t4:
+            return 4
+        if value < t3:
+            return 3
+        if value < t2:
+            return 2
+        return 1
+    else:
+        if value > t5:
+            return 5
+        if value >= t4:
+            return 4
+        if value >= t3:
+            return 3
+        if value >= t2:
+            return 2
+        return 1
+
+
+def _build_rating_context(algorithm_class: str, config: dict) -> dict:
+    """Resolve per-algorithm-class rating thresholds from config.
+
+    Returns a dict with keys:
+      algorithm_class, regression_frequency_thresholds, exploration_sdi_thresholds
+    Falls back to package defaults when the class is absent from config.
+    """
+    cls_cfg = (config or {}).get("algorithm_classes", {}).get(algorithm_class, {})
+    return {
+        "algorithm_class": algorithm_class,
+        "regression_frequency_thresholds": cls_cfg.get(
+            "regression_frequency_thresholds", list(_DEFAULT_REGRESSION_THRESHOLDS)
+        ),
+        "exploration_sdi_thresholds": cls_cfg.get(
+            "exploration_sdi_thresholds", list(_DEFAULT_EXPLORATION_THRESHOLDS)
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +411,7 @@ def _build_stagnation_dimension(
 def _build_regression_dimension(
     quant: Any,
     historical: List[Any],
+    rating_context: Optional[dict] = None,
 ) -> DimensionReport:
     reg = getattr(quant, "regression", None)
     if reg is None:
@@ -362,16 +428,12 @@ def _build_regression_dimension(
 
     freq = reg.regression_frequency
 
-    if freq < 0.05:
-        rating = 5
-    elif freq < 0.15:
-        rating = 4
-    elif freq < 0.30:
-        rating = 3
-    elif freq < 0.50:
-        rating = 2
+    if rating_context:
+        thresholds = rating_context["regression_frequency_thresholds"]
+        rating = _rate_by_thresholds(freq, thresholds, lower_is_better=True)
     else:
-        rating = 1
+        thresholds = _DEFAULT_REGRESSION_THRESHOLDS
+        rating = _rate_by_thresholds(freq, thresholds, lower_is_better=True)
 
     evidence = [
         f"Regression frequency: {freq:.1%}",
@@ -380,6 +442,13 @@ def _build_regression_dimension(
         f"moderate={reg.severity_distribution.get('moderate', 0)}, "
         f"severe={reg.severity_distribution.get('severe', 0)}",
     ]
+    if rating_context and thresholds != _DEFAULT_REGRESSION_THRESHOLDS:
+        algo_class = rating_context.get("algorithm_class", "")
+        evidence.append(
+            f"Note: regression thresholds adjusted for {algo_class} "
+            f"(expected range {thresholds[0]:.0%}–{thresholds[1]:.0%} vs "
+            f"{_DEFAULT_REGRESSION_THRESHOLDS[0]:.0%}–{_DEFAULT_REGRESSION_THRESHOLDS[1]:.0%} default)."
+        )
     if reg.death_spiral_periods:
         for start, end in reg.death_spiral_periods:
             evidence.append(f"Death spiral: iterations {start}–{end}")
@@ -557,6 +626,7 @@ def _build_exploration_dimension(
     quant: Any,
     historical: List[Any],
     qual: Any = None,
+    rating_context: Optional[dict] = None,
 ) -> DimensionReport:
     expl = getattr(quant, "exploration", None)
     if expl is None:
@@ -573,16 +643,12 @@ def _build_exploration_dimension(
 
     sdi = expl.structural_diversity_index
 
-    if sdi > 0.7:
-        rating = 5
-    elif sdi >= 0.5:
-        rating = 4
-    elif sdi >= 0.3:
-        rating = 3
-    elif sdi >= 0.1:
-        rating = 2
+    if rating_context:
+        thresholds = rating_context["exploration_sdi_thresholds"]
+        rating = _rate_by_thresholds(sdi, thresholds, lower_is_better=False)
     else:
-        rating = 1
+        thresholds = _DEFAULT_EXPLORATION_THRESHOLDS
+        rating = _rate_by_thresholds(sdi, thresholds, lower_is_better=False)
 
     evidence = [
         f"Structural diversity index: {sdi:.3f}",
@@ -591,6 +657,12 @@ def _build_exploration_dimension(
         f"Distinct strategy clusters: {expl.distinct_strategy_clusters}",
         f"Revert frequency: {expl.revert_frequency:.1%}",
     ]
+    if rating_context and thresholds != _DEFAULT_EXPLORATION_THRESHOLDS:
+        algo_class = rating_context.get("algorithm_class", "")
+        evidence.append(
+            f"Note: diversity thresholds adjusted for {algo_class} "
+            f"(good threshold {thresholds[1]:.2f} vs {_DEFAULT_EXPLORATION_THRESHOLDS[1]:.2f} default)."
+        )
 
     summaries = {
         5: "Excellent exploration — high structural diversity across solutions.",
@@ -1565,6 +1637,17 @@ def _build_infrastructure_dimension(
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _compute_num_islands(df: "pd.DataFrame") -> Optional[int]:
+    if "island_id" not in df.columns:
+        return None
+    unique = df["island_id"].dropna().unique()
+    return int(len(unique)) if len(unique) > 0 else None
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -1575,6 +1658,8 @@ def synthesize_report(
     config: dict,
     experiment_id: str = "",
     llm_judge_status: Optional[LLMJudgeStatus] = None,
+    algorithm_class: str = "population_evolutionary",
+    algorithm_name: Optional[str] = None,
 ) -> EvolveLoopReport:
     """
     Synthesize a full EvolveLoopReport from quantitative, qualitative, and
@@ -1612,13 +1697,16 @@ def synthesize_report(
                 (agg.best_score - float(baseline_score)) / abs(float(baseline_score))
             )
 
+    # --- Rating context (algorithm-class-aware thresholds) ---
+    rating_context = _build_rating_context(algorithm_class, config or {})
+
     # --- Dimension reports ---
     dimensions: List[DimensionReport] = [
         _build_convergence_dimension(quant, historical),
         _build_stagnation_dimension(quant, historical),
-        _build_regression_dimension(quant, historical),
+        _build_regression_dimension(quant, historical, rating_context=rating_context),
         _build_efficiency_dimension(quant, historical),
-        _build_exploration_dimension(quant, historical, qual=qual),
+        _build_exploration_dimension(quant, historical, qual=qual, rating_context=rating_context),
         _build_search_space_dimension(quant, historical),
         _build_ceiling_dimension(quant, historical),
         _build_meta_analysis_dimension(quant, historical, qual=qual),
@@ -1653,4 +1741,7 @@ def synthesize_report(
         run_source=ingestion_cfg.get("source") or None,
         run_path=ingestion_cfg.get("path") or None,
         run_config_path=config.get("_config_path") or None,
+        algorithm_class=algorithm_class,
+        algorithm_name=algorithm_name,
+        num_islands=_compute_num_islands(df),
     )

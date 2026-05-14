@@ -1366,6 +1366,69 @@ def adapt_openevolve(
 
 
 # ---------------------------------------------------------------------------
+# detect_algorithm_class  (public helper)
+# ---------------------------------------------------------------------------
+
+_ALWAYS_POPULATION_EVOLUTIONARY = {"skydiscover", "openevolve", "shinkaevolve"}
+
+
+def detect_algorithm_name(source: str, path: str) -> Optional[str]:
+    """Infer the specific algorithm name from output file naming conventions.
+
+    For skydiscover runs the JSONL stats file is named
+    ``{algorithm}_iteration_stats_*.jsonl`` (e.g. ``adaevolve_iteration_stats_*.jsonl``).
+    The prefix before ``_iteration_stats_`` is the algorithm name.
+
+    Returns the algorithm name string (e.g. ``"adaevolve"``) or ``None`` when
+    the name cannot be determined from the available files.
+    """
+    source_key = source.lower().strip()
+    if source_key == "skydiscover" and path:
+        for match in Path(path).rglob("*_iteration_stats_*.jsonl"):
+            stem = match.stem
+            idx = stem.find("_iteration_stats_")
+            if idx > 0:
+                return stem[:idx]
+    return None
+
+
+def detect_algorithm_class(source: str, records: List[dict]) -> str:
+    """Infer the algorithm class from the ingestion source and record contents.
+
+    Returns one of:
+      "population_evolutionary" — multi-island / population-based search
+                                  (OpenEvolve, AdaEvolve, ShinkaEvolve, EvoX, GEPA, …)
+      "bayesian_optimization"   — BO / surrogate-model-guided search
+      "serial_refinement"       — sequential single-chain refinement
+
+    Detection logic
+    ---------------
+    - Structured sources (skydiscover / openevolve / shinkaevolve) are always
+      classified as population_evolutionary.
+    - For jsonl records the first 10 records are inspected:
+        * Any record with a non-None island_id  → population_evolutionary
+        * Any record with a 'parameters' dict containing numeric values
+          (hinting at a BO search space) → bayesian_optimization
+        * Otherwise → serial_refinement
+    """
+    source_key = source.lower().strip()
+    if source_key in _ALWAYS_POPULATION_EVOLUTIONARY:
+        return "population_evolutionary"
+
+    sample = records[:10]
+    for rec in sample:
+        if rec.get("island_id") is not None:
+            return "population_evolutionary"
+
+    for rec in sample:
+        params = rec.get("parameters") or {}
+        if any(isinstance(v, (int, float)) for v in params.values()):
+            return "bayesian_optimization"
+
+    return "serial_refinement"
+
+
+# ---------------------------------------------------------------------------
 # load_evolve_records  (public entry-point)
 # ---------------------------------------------------------------------------
 
