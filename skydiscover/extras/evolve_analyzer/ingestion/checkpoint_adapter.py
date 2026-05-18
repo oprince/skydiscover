@@ -929,27 +929,34 @@ def adapt_skydiscover(checkpoint_dir: str) -> Iterator[dict]:
         best_code = best_state.get("code")
 
         if log_path:
-            log_records = _parse_skydiscover_log(log_path, initial_score)
+            if _is_openevolve_log(log_path):
+                log_records = _parse_openevolve_log_full(log_path)
+            else:
+                log_records = _parse_skydiscover_log(log_path, initial_score)
             if log_records:
                 # Inject seed parent_metrics from log (first eval after init)
                 seed_m = _extract_seed_metrics_from_log(log_path)
                 if seed_m:
                     log_records[0]["parent_metrics"] = seed_m
-                prev_score: Optional[float] = None
+                if not _is_openevolve_log(log_path):
+                    # For skydiscover logs, chain parent_score from previous records
+                    # (openevolve log parser already resolves parent_score via score_map)
+                    prev_score: Optional[float] = None
+                    for rec in log_records:
+                        if prev_score is not None:
+                            rec.setdefault("parent_score", prev_score)
+                            if "child_score" in rec:
+                                rec.setdefault(
+                                    "score_delta",
+                                    rec["child_score"] - rec.get("parent_score", prev_score),
+                                )
+                        cs = rec.get("child_score")
+                        if cs is not None:
+                            prev_score = cs if prev_score is None else max(prev_score, cs)
+                # Attach best known code to the last record of this run
+                if best_code:
+                    log_records[-1].setdefault("child_code", best_code)
                 for rec in log_records:
-                    if prev_score is not None:
-                        rec.setdefault("parent_score", prev_score)
-                        if "child_score" in rec:
-                            rec.setdefault(
-                                "score_delta",
-                                rec["child_score"] - rec.get("parent_score", prev_score),
-                            )
-                    # Attach best known code only to the last record of this run
-                    if rec is log_records[-1] and best_code:
-                        rec["child_code"] = best_code
-                    cs = rec.get("child_score")
-                    if cs is not None:
-                        prev_score = cs if prev_score is None else max(prev_score, cs)
                     yield rec
                 continue
 
@@ -1213,6 +1220,179 @@ def adapt_shinkaevolve(db_path: str) -> Iterator[dict]:
 
 _OE_LOG_TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d+)")
 _OE_LOG_ITER_ERROR = re.compile(r"WARNING.*Iteration (\d+) error: (.+)")
+_OE_LOG_MAP_ELITES_NEW = re.compile(r"New MAP-Elites cell occupied in island (\d+)")
+_OE_LOG_MAP_ELITES_IMPROVED = re.compile(r"Island (\d+) MAP-Elites cell improved")
+_OE_LOG_ITER_COMPLETED = re.compile(
+    r"Iteration (\d+): Program (\S+) \(parent: (\S+)\) completed in [\d.]+s"
+)
+_OE_LOG_METRICS = re.compile(r"Metrics: (.+)")
+_OE_LOG_COMBINED_SCORE = re.compile(r"combined_score=(-?[\d.e]+)")
+_OE_LOG_SEED_EVAL = re.compile(
+    r"Evaluated program (\S+) in [\d.]+s: combined_score=(-?[\d.e]+)"
+)
+_OE_LOG_KV_SIGNED = re.compile(r"\b(\w+)=(-?[\d.]+)")
+
+
+def _is_openevolve_log(log_path: Path) -> bool:
+    """Return True when log_path looks like an OpenEvolve run log."""
+    return log_path.name.startswith("openevolve_")
+
+
+def _parse_openevolve_metrics_str(metrics_str: str) -> dict:
+    """Parse 'key=value' metrics string including negative values; skips nested dicts."""
+    remaining = re.sub(r"\w+=\{[^}]*\}", "", metrics_str)
+    result: dict = {}
+    for m in _OE_LOG_KV_SIGNED.finditer(remaining):
+        try:
+            result[m.group(1)] = float(m.group(2))
+        except ValueError:
+            pass
+    return result
+
+
+def _parse_openevolve_log_full(log_path: Path) -> list[dict]:
+    """Parse all iteration records from an OpenEvolve log file.
+
+    Handles the parallel controller format:
+      - "Iteration N: Program <child> (parent: <parent>) completed in <t>s"
+        followed by "Metrics: combined_score=<score>, ..."
+      - "WARNING ... Iteration N error: <msg>"
+
+    Also captures the seed score so parent_score/score_delta can be filled in.
+    Returns records sorted by iteration.
+    """
+    from datetime import datetime as _dt
+
+    records: list[dict] = []
+    score_map: dict[str, float] = {}   # program_id -> combined_score
+    island_map: dict[str, int] = {}    # program_id -> island_id
+
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return records
+
+    # Extract seed score and island (MAP-Elites line follows the seed eval line)
+    for idx, line in enumerate(lines):
+        seed_m = _OE_LOG_SEED_EVAL.search(line)
+        if seed_m:
+            seed_id = seed_m.group(1)
+            score_map[seed_id] = float(seed_m.group(2))
+            for j in range(idx + 1, min(idx + 4, len(lines))):
+                isle_m = _OE_LOG_MAP_ELITES_NEW.search(lines[j])
+                if isle_m:
+                    island_map[seed_id] = int(isle_m.group(1))
+                    break
+            break
+
+    # pending_island is set by a MAP-Elites line and consumed by the next
+    # "Iteration N: Program..." line. The database log writes the MAP-Elites
+    # line 1-2 lines before the process_parallel completion line, and not at
+    # all when the child doesn't improve or occupy any cell.
+    pending_island: Optional[int] = None
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        ts_m = _OE_LOG_TS.match(line)
+        timestamp = None
+        if ts_m:
+            try:
+                ts_str = ts_m.group(1)
+                ms = int(ts_m.group(2))
+                timestamp = _dt.strptime(ts_str, "%Y-%m-%d %H:%M:%S").timestamp() + ms / 1000.0
+            except ValueError:
+                pass
+
+        island_m = _OE_LOG_MAP_ELITES_NEW.search(line) or _OE_LOG_MAP_ELITES_IMPROVED.search(line)
+        if island_m:
+            pending_island = int(island_m.group(1))
+            i += 1
+            continue
+
+        error_m = _OE_LOG_ITER_ERROR.search(line)
+        if error_m:
+            rec: dict = {
+                "iteration": int(error_m.group(1)),
+                "evaluation_status": "crash",
+                "error": error_m.group(2).strip(),
+            }
+            if timestamp:
+                rec["timestamp"] = timestamp
+            pending_island = None
+            records.append(rec)
+            i += 1
+            continue
+
+        completed_m = _OE_LOG_ITER_COMPLETED.search(line)
+        if completed_m:
+            child_id = completed_m.group(2)
+            rec = {
+                "iteration": int(completed_m.group(1)),
+                "evaluation_status": "success",
+                "child_program_id": child_id,
+                "parent_program_id": completed_m.group(3),
+            }
+            if timestamp:
+                rec["timestamp"] = timestamp
+
+            if pending_island is not None:
+                rec["island_id"] = pending_island
+                rec["parameters"] = {"island_id": pending_island}
+            pending_island = None
+
+            for j in range(i + 1, min(i + 3, len(lines))):
+                metrics_m = _OE_LOG_METRICS.search(lines[j])
+                if metrics_m:
+                    metrics_str = metrics_m.group(1)
+                    score_m = _OE_LOG_COMBINED_SCORE.search(metrics_str)
+                    if score_m:
+                        child_score = float(score_m.group(1))
+                        rec["child_score"] = child_score
+                        score_map[child_id] = child_score
+                    flat = _parse_openevolve_metrics_str(metrics_str)
+                    if flat:
+                        rec["evaluator_metrics"] = flat
+                    break
+
+            records.append(rec)
+            i += 1
+            continue
+
+        i += 1
+
+    for rec in records:
+        parent_id = rec.get("parent_program_id")
+        if parent_id and "parent_score" not in rec and parent_id in score_map:
+            rec["parent_score"] = score_map[parent_id]
+        if "child_score" in rec and "parent_score" in rec and "score_delta" not in rec:
+            rec["score_delta"] = rec["child_score"] - rec["parent_score"]
+
+    # Populate island_map from records that already have island_id, then propagate
+    # to iterations where the child didn't improve any MAP-Elites cell (no direct
+    # island log line). In OpenEvolve, the child is always generated from a parent
+    # in a specific island and placed in the same island.
+    for rec in records:
+        child_id = rec.get("child_program_id")
+        if child_id and rec.get("island_id") is not None:
+            island_map[child_id] = rec["island_id"]
+
+    for _ in range(3):  # up to 3 passes for chains of unresolved parents
+        for rec in records:
+            if rec.get("island_id") is not None:
+                continue
+            parent_id = rec.get("parent_program_id")
+            if parent_id and parent_id in island_map:
+                island_id = island_map[parent_id]
+                rec["island_id"] = island_id
+                rec.setdefault("parameters", {})["island_id"] = island_id
+                child_id = rec.get("child_program_id")
+                if child_id:
+                    island_map[child_id] = island_id
+
+    records.sort(key=lambda r: r.get("iteration") if r.get("iteration") is not None else 0)
+    return records
 
 
 def _parse_openevolve_log(log_path: Path) -> list[dict]:
@@ -1400,74 +1580,82 @@ def adapt_openevolve(
                         records.append(failed_rec)
 
     else:
-        # Fallback: scan checkpoint directories (same logic as SkyDiscover)
-        root = Path(checkpoint_dir)
-        if root.is_dir():
-            pattern = re.compile(r"^checkpoint_(\d+)$")
-            numbered: list[tuple[int, Path]] = []
+        # No trace file: try log-based parsing first
+        logs_dir = Path(checkpoint_dir) / "logs"
+        if logs_dir.is_dir():
+            log_files = sorted(logs_dir.glob("*.log"))
+            if log_files:
+                records.extend(_parse_openevolve_log_full(log_files[0]))
 
-            def _scan_ckpts(directory: Path) -> list[tuple[int, Path]]:
-                found = []
-                for entry in directory.iterdir():
-                    if entry.is_dir():
-                        m = pattern.match(entry.name)
-                        if m:
-                            found.append((int(m.group(1)), entry))
-                return found
+        if not records:
+            # Fallback: scan checkpoint directories (same logic as SkyDiscover)
+            root = Path(checkpoint_dir)
+            if root.is_dir():
+                pattern = re.compile(r"^checkpoint_(\d+)$")
+                numbered: list[tuple[int, Path]] = []
 
-            numbered = _scan_ckpts(root)
-            # Also check root/checkpoints/ subdirectory (common OpenEvolve layout)
-            if not numbered:
-                ckpts_subdir = root / "checkpoints"
-                if ckpts_subdir.is_dir():
-                    numbered = _scan_ckpts(ckpts_subdir)
-            numbered.sort(key=lambda t: t[0])
+                def _scan_ckpts(directory: Path) -> list[tuple[int, Path]]:
+                    found = []
+                    for entry in directory.iterdir():
+                        if entry.is_dir():
+                            m = pattern.match(entry.name)
+                            if m:
+                                found.append((int(m.group(1)), entry))
+                    return found
 
-            prev_score: Optional[float] = None
-            prev_code: Optional[str] = None
+                numbered = _scan_ckpts(root)
+                # Also check root/checkpoints/ subdirectory (common OpenEvolve layout)
+                if not numbered:
+                    ckpts_subdir = root / "checkpoints"
+                    if ckpts_subdir.is_dir():
+                        numbered = _scan_ckpts(ckpts_subdir)
+                numbered.sort(key=lambda t: t[0])
 
-            for n, ckpt_dir in numbered:
-                solution = _read_first_json(ckpt_dir, "best_solution.json", "solution.json")
-                metadata = _read_first_json(ckpt_dir, "metadata.json", "info.json")
-                evo_state = _read_first_json(ckpt_dir, "evolution_state.json")
+                prev_score: Optional[float] = None
+                prev_code: Optional[str] = None
 
-                child_score = solution.get("score") or solution.get("fitness")
-                if child_score is None:
-                    child_score = metadata.get("score") or metadata.get("fitness")
-                if child_score is None:
-                    child_score = evo_state.get("score") or evo_state.get("fitness")
+                for n, ckpt_dir in numbered:
+                    solution = _read_first_json(ckpt_dir, "best_solution.json", "solution.json")
+                    metadata = _read_first_json(ckpt_dir, "metadata.json", "info.json")
+                    evo_state = _read_first_json(ckpt_dir, "evolution_state.json")
 
-                child_code = (
-                    solution.get("program")
-                    or solution.get("code")
-                    or metadata.get("program")
-                    or metadata.get("code")
-                )
+                    child_score = solution.get("score") or solution.get("fitness")
+                    if child_score is None:
+                        child_score = metadata.get("score") or metadata.get("fitness")
+                    if child_score is None:
+                        child_score = evo_state.get("score") or evo_state.get("fitness")
 
-                rec = {"iteration": metadata.get("iteration", n)}
-                if child_score is not None:
-                    rec["child_score"] = float(child_score)
-                if prev_score is not None:
-                    rec["parent_score"] = float(prev_score)
+                    child_code = (
+                        solution.get("program")
+                        or solution.get("code")
+                        or metadata.get("program")
+                        or metadata.get("code")
+                    )
+
+                    rec = {"iteration": metadata.get("iteration", n)}
                     if child_score is not None:
-                        rec["score_delta"] = float(child_score) - float(prev_score)
-                if child_code is not None:
-                    rec["child_code"] = child_code
-                if prev_code is not None:
-                    rec["parent_code"] = prev_code
+                        rec["child_score"] = float(child_score)
+                    if prev_score is not None:
+                        rec["parent_score"] = float(prev_score)
+                        if child_score is not None:
+                            rec["score_delta"] = float(child_score) - float(prev_score)
+                    if child_code is not None:
+                        rec["child_code"] = child_code
+                    if prev_code is not None:
+                        rec["parent_code"] = prev_code
 
-                for field in ("model", "mutation_type", "timestamp", "island_id",
-                              "reasoning_trace", "evaluator_metrics"):
-                    val = metadata.get(field) or evo_state.get(field)
-                    if val is not None:
-                        rec[field] = val
+                    for field in ("model", "mutation_type", "timestamp", "island_id",
+                                  "reasoning_trace", "evaluator_metrics"):
+                        val = metadata.get(field) or evo_state.get(field)
+                        if val is not None:
+                            rec[field] = val
 
-                if child_score is not None:
-                    prev_score = float(child_score)
-                if child_code is not None:
-                    prev_code = child_code
+                    if child_score is not None:
+                        prev_score = float(child_score)
+                    if child_code is not None:
+                        prev_code = child_code
 
-                records.append(rec)
+                    records.append(rec)
 
     # Sort by iteration (parallel writes may be out of order)
     records.sort(key=lambda r: r.get("iteration") if r.get("iteration") is not None else 0)
