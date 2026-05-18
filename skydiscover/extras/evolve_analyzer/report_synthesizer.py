@@ -1387,6 +1387,13 @@ def _generate_executive_summary(
             "Insufficient data for dimensional analysis."
         )
 
+    if agg.total_iterations > 0 and agg.n_successful == 0:
+        return (
+            f"Run failed completely — 0 of {agg.total_iterations} iterations "
+            "produced a valid evaluation. All iterations crashed before scoring. "
+            "Review the crash details in the Stagnation section below."
+        )
+
     avg_rating = sum(d.rating for d in available) / len(available)
     worst_dim = min(available, key=lambda d: d.rating)
 
@@ -1456,6 +1463,13 @@ def _generate_executive_summary_md(
             f"Experiment completed {agg.total_iterations} iterations "
             f"(best score: {agg.best_score:.4g}). "
             "Insufficient data for dimensional analysis."
+        )
+
+    if agg.total_iterations > 0 and agg.n_successful == 0:
+        return (
+            f"**Run failed completely** — 0 of {agg.total_iterations} iterations "
+            "produced a valid evaluation. All iterations crashed before scoring. "
+            "Review the crash details in the Stagnation section below."
         )
 
     avg_rating = sum(d.rating for d in available) / len(available)

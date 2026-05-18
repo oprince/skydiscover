@@ -46,10 +46,12 @@ from typing import Iterator, List, Optional
 _STATUS_MAP: dict[str, str] = {
     "ok": "success",
     "success": "success",
+    "succeeded": "success",
     "timeout": "timeout",
     "error": "crash",
     "exception": "crash",
     "crash": "crash",
+    "failed": "crash",
 }
 
 
@@ -84,7 +86,7 @@ def _fill_derived_fields(records: List[dict]) -> List[dict]:
 
         # evaluation_status
         if rec.get("evaluation_status") is None:
-            raw_status = rec.get("status")
+            raw_status = rec.get("status") or rec.get("outcome")
             if raw_status is not None:
                 rec["evaluation_status"] = _normalise_status(raw_status)
             else:
@@ -158,6 +160,8 @@ _LOG_FLAT_KV = re.compile(r"\b(\w+)=([\d.]+)")
 _LOG_HTTP_ERROR = re.compile(r"HTTP Error (50[23])")
 _LOG_CONN_REFUSED = re.compile(r"ConnectionRefusedError.*Connect call failed \(('[\d.]+', \d+)\)")
 _LOG_CLIENT_ERROR = re.compile(r"ERROR - Client error during request")
+_LOG_EVAL_EXTRACT_FAIL = re.compile(r"Failed to extract Go code from program")
+_LOG_EVAL_BUILD_FAIL = re.compile(r"Build failed: (.+)")
 
 
 def _extract_infra_log_signals(log_path: Path) -> Optional[dict]:
@@ -256,6 +260,58 @@ def _extract_infra_log_signals(log_path: Path) -> Optional[dict]:
         result["sample_error_lines"] = sample
 
     return result if result else None
+
+
+def _parse_eval_error_records(lines: list[str]) -> list[dict]:
+    """Fallback parser for eval-error-only logs (e.g. runs where every LLM output
+    was invalid so no iteration-tracking lines were emitted).
+
+    Groups error events within a 120-second window into per-iteration failed records.
+    Returns [] when no recognizable eval-error lines are found.
+    """
+    from datetime import datetime as _dt
+
+    events: list[dict] = []
+    for line in lines:
+        ts_m = _LOG_TS.match(line)
+        if not ts_m:
+            continue
+        try:
+            ts = _dt.strptime(ts_m.group(1), "%Y-%m-%d %H:%M:%S").timestamp() + int(ts_m.group(2)) / 1000.0
+        except ValueError:
+            continue
+        if _LOG_EVAL_EXTRACT_FAIL.search(line):
+            events.append({"ts": ts, "error": "Failed to extract Go code from program"})
+        elif _LOG_EVAL_BUILD_FAIL.search(line):
+            m = _LOG_EVAL_BUILD_FAIL.search(line)
+            events.append({"ts": ts, "error": f"Build failed: {m.group(1).strip()}"})
+
+    if not events:
+        return []
+
+    WINDOW = 120.0
+    groups: list[list[dict]] = []
+    current: list[dict] = [events[0]]
+    for ev in events[1:]:
+        if ev["ts"] - current[-1]["ts"] <= WINDOW:
+            current.append(ev)
+        else:
+            groups.append(current)
+            current = [ev]
+    groups.append(current)
+
+    records = []
+    for i, group in enumerate(groups, 1):
+        error_msgs = list(dict.fromkeys(e["error"] for e in group))
+        records.append({
+            "iteration": i,
+            "outcome": "failed",
+            "evaluation_status": "crash",
+            "format_valid": False,
+            "error": "; ".join(error_msgs),
+            "timestamp": group[0]["ts"],
+        })
+    return records
 
 
 def _find_run_log(run_dir: Path) -> Optional[Path]:
@@ -395,6 +451,12 @@ def _parse_skydiscover_log(log_path: Path, initial_score: Optional[float]) -> li
         if pending_success["child_score"] is not None:
             rec["child_score"] = pending_success["child_score"]
         records.append(rec)
+
+    # Fallback: if the log only contains eval-error lines (e.g. a run where every
+    # LLM output was invalid and no iteration-tracking lines were emitted),
+    # synthesize failed-iteration records from those error entries.
+    if not records:
+        records = _parse_eval_error_records(lines)
 
     return records
 
@@ -1372,6 +1434,9 @@ def adapt_openevolve(
 _ALWAYS_POPULATION_EVOLUTIONARY = {"skydiscover", "openevolve", "shinkaevolve"}
 
 
+_LOG_NAME_DATE_SUFFIX = re.compile(r"_\d{8}_\d{6}$")
+
+
 def detect_algorithm_name(source: str, path: str) -> Optional[str]:
     """Infer the specific algorithm name from output file naming conventions.
 
@@ -1379,8 +1444,11 @@ def detect_algorithm_name(source: str, path: str) -> Optional[str]:
     ``{algorithm}_iteration_stats_*.jsonl`` (e.g. ``adaevolve_iteration_stats_*.jsonl``).
     The prefix before ``_iteration_stats_`` is the algorithm name.
 
-    Returns the algorithm name string (e.g. ``"adaevolve"``) or ``None`` when
-    the name cannot be determined from the available files.
+    Fallback: if no JSONL is found, inspect log file names matching the pattern
+    ``{algorithm}_{YYYYMMDD}_{HHMMSS}.log`` (e.g. ``gepa_20260312_143339.log``).
+
+    Returns the algorithm name string (e.g. ``"adaevolve"``, ``"gepa"``) or
+    ``None`` when the name cannot be determined from the available files.
     """
     source_key = source.lower().strip()
     if source_key == "skydiscover" and path:
@@ -1389,6 +1457,12 @@ def detect_algorithm_name(source: str, path: str) -> Optional[str]:
             idx = stem.find("_iteration_stats_")
             if idx > 0:
                 return stem[:idx]
+        # Fallback: infer from log file name ({algo}_{YYYYMMDD}_{HHMMSS}.log)
+        for log_match in Path(path).rglob("*.log"):
+            stem = log_match.stem
+            stripped = _LOG_NAME_DATE_SUFFIX.sub("", stem)
+            if stripped and stripped != stem:
+                return stripped
     return None
 
 

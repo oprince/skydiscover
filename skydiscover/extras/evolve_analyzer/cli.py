@@ -180,6 +180,11 @@ def report_to_text(report: EvolveLoopReport) -> str:
         sp for sp in (report.stagnation_periods or [])
         if sp.length > 1 and sp.severity == "critical"
     ]
+    crash_periods = [
+        sp for sp in (report.stagnation_periods or [])
+        if sp.dominant_failure_type == "crash"
+        and sp not in critical_periods
+    ]
 
     for dim in report.dimensions:
         lines.append("")
@@ -200,6 +205,28 @@ def report_to_text(report: EvolveLoopReport) -> str:
                     lines.append(f"      ◦ {stripped}")
                 else:
                     lines.append(f"  • {ev}")
+
+        if dim.name == "Stagnation" and crash_periods:
+            lines.append("Crash stagnation details:")
+            for sp in crash_periods:
+                end_str = str(sp.end_iteration) if sp.end_iteration is not None else "ongoing"
+                lines.append(
+                    f"  Streak {sp.streak_id}: iters {sp.start_iteration}–{end_str}  "
+                    f"len={sp.length}  failure={sp.dominant_failure_type}"
+                )
+                crash_samples = getattr(sp, "crash_samples", None)
+                if crash_samples:
+                    lines.append("    Crash details:")
+                    for sample in crash_samples:
+                        lines.append(f"      iter {sample['iteration']}: {sample['error']}")
+                if sp.llm_analysis:
+                    category = sp.llm_analysis.get("category", "")
+                    explanation = sp.llm_analysis.get("explanation", "")
+                    if category:
+                        lines.append(f"    LLM category:   {category}")
+                    if explanation:
+                        lines.append(f"    LLM analysis:   {explanation}")
+                lines.append(f"    Recommendation: {sp.recommendation}")
 
         if dim.name == "Stagnation" and critical_periods:
             lines.append("Critical stagnation details:")

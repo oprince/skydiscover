@@ -78,15 +78,17 @@ def _compute_severity(
     """
     Severity assignment per design doc:
       - length >= 2*threshold                                     → "critical"
-      - dominant in ("identical_output", "compliance_violation")
+      - dominant in ("identical_output", "compliance_violation",
+                     "crash", "format_invalid")
         and length >= threshold                                   → "critical"
-      - dominant in ("identical_output", "compliance_violation")
-        and length < threshold                                    → "high"
+      - dominant in above set and length < threshold              → "high"
       - otherwise                                                 → "warning"
     """
     if length >= 2 * threshold:
         return "critical"
-    if dominant_failure_type in ("identical_output", "compliance_violation"):
+    if dominant_failure_type in (
+        "identical_output", "compliance_violation", "crash", "format_invalid"
+    ):
         return "critical" if length >= threshold else "high"
     return "warning"
 
