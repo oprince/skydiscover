@@ -148,6 +148,12 @@ def _read_first_json(directory: Path, *candidates: str) -> dict:
 
 _LOG_TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d+)")
 _LOG_ITER_FAILED = re.compile(r"Iteration (\d+) failed: (.+)")
+_LOG_ITER_GEPA_OUTCOME = re.compile(
+    r"Iteration (\d+): (REJECTED|ACCEPTED) child \(child_score=([-\d.]+)[^)]*parent_score=([-\d.]+)\)"
+)
+_LOG_ITER_PROG_COMPLETED = re.compile(
+    r"Iteration (\d+): Program (\S+) \(parent: (\S+)\) completed in [\d.]+s"
+)
 _LOG_ITER_SUCCESS = re.compile(
     r"Evaluated program (\S+)(?:\s+\[train\])?\s+in [\d.]+s: combined_score=([\d.]+)"
 )
@@ -439,6 +445,43 @@ def _parse_skydiscover_log(log_path: Path, initial_score: Optional[float]) -> li
             if current_score is not None:
                 rec["child_score"] = current_score
             records.append(rec)
+            continue
+
+        gepa_m = _LOG_ITER_GEPA_OUTCOME.search(line)
+        if gepa_m:
+            iteration = int(gepa_m.group(1))
+            outcome = "succeeded" if gepa_m.group(2) == "ACCEPTED" else "failed"
+            child_score = float(gepa_m.group(3))
+            parent_score_val = float(gepa_m.group(4))
+            rec = {
+                "iteration": iteration,
+                "outcome": outcome,
+                "child_score": child_score,
+                "parent_score": parent_score_val,
+                "score_delta": child_score - parent_score_val,
+                "timestamp": timestamp,
+            }
+            if pending_success and pending_success.get("child_program_id"):
+                rec["child_program_id"] = pending_success["child_program_id"]
+            pending_success = None
+            records.append(rec)
+            continue
+
+        prog_m = _LOG_ITER_PROG_COMPLETED.search(line)
+        if prog_m and pending_success:
+            prog_id = prog_m.group(2)
+            if pending_success.get("child_program_id") == prog_id:
+                rec = {
+                    "iteration": int(prog_m.group(1)),
+                    "outcome": "succeeded",
+                    "child_score": pending_success["child_score"],
+                    "child_program_id": prog_id,
+                    "parent_program_id": prog_m.group(3),
+                    "timestamp": pending_success["timestamp"],
+                }
+                pending_success = None
+                records.append(rec)
+                continue
 
     # Flush any trailing successful eval (last iteration succeeded, run ended)
     if pending_success:
@@ -895,13 +938,18 @@ def adapt_skydiscover(checkpoint_dir: str) -> Iterator[dict]:
                 prev_score: Optional[float] = None
                 for rec in log_records:
                     if prev_score is not None:
-                        rec["parent_score"] = prev_score
+                        rec.setdefault("parent_score", prev_score)
                         if "child_score" in rec:
-                            rec["score_delta"] = rec["child_score"] - prev_score
+                            rec.setdefault(
+                                "score_delta",
+                                rec["child_score"] - rec.get("parent_score", prev_score),
+                            )
                     # Attach best known code only to the last record of this run
                     if rec is log_records[-1] and best_code:
                         rec["child_code"] = best_code
-                    prev_score = rec.get("child_score", prev_score)
+                    cs = rec.get("child_score")
+                    if cs is not None:
+                        prev_score = cs if prev_score is None else max(prev_score, cs)
                     yield rec
                 continue
 
